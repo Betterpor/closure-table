@@ -305,7 +305,7 @@ trait ClosureTable
             SELECT {$descendantId}, {$descendantId}, 0
         ";
 
-        DB::connection($this->connection)->insert($sql);
+        DB::connection($this->connection)->query($sql);
     }
 
     /**
