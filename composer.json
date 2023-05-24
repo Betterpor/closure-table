@@ -1,5 +1,5 @@
 {
-    "name": "jiaxincui/closure-table",
+    "name": "btb/closure-table",
     "version": "2.1.13",
     "description": "A closure table tree package for laravel eloquent",
     "keywords": ["laravel", "tree", "closure-table", "eloquent", "laravel-tree"],
