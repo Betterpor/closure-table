@@ -1,8 +1,8 @@
 <?php
 namespace Jiaxincui\ClosureTable\Traits;
 
-use Jenssegers\Mongodb\Eloquent\Model;
-use Illuminate\Database\Eloquent\Collection;
+use Illuminate\Database\Eloquent\Model;
+use Jenssegers\Mongodb\Collection;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -120,7 +120,7 @@ trait ClosureTable
      */
     protected function getQualifiedAncestorColumn()
     {
-        return $this->getClosureTable() . '.' . $this->getAncestorColumn();
+        return $this->getAncestorColumn();
     }
 
     /**
@@ -130,7 +130,7 @@ trait ClosureTable
      */
     protected function getQualifiedDescendantColumn()
     {
-        return $this->getClosureTable() . '.' . $this->getDescendantColumn();
+        return $this->getDescendantColumn();
     }
 
     /**
@@ -140,7 +140,7 @@ trait ClosureTable
      */
     protected function getQualifiedDistanceColumn()
     {
-        return $this->getClosureTable() . '.' . $this->getDistanceColumn();
+        return $this->getDistanceColumn();
     }
 
     protected function getQualifiedParentColumn()
@@ -222,11 +222,12 @@ trait ClosureTable
         $ancestor = $this->getQualifiedAncestorColumn();
         $descendant = $this->getQualifiedDescendantColumn();
         $distance = $this->getQualifiedDistanceColumn();
-        $query = $this
-            ->join($closureTable, $keyName, '=', $ancestor)
-            ->where($ancestor, $key)
-            ->where($descendant, $key)
-            ->where($distance, 0);
+        $query = $this->where($keyName, $key);
+        if ($query->count() === 0) {
+            $query = $this->where($keyName, null);
+        } else {
+            $query = DB::connection($this->connection)->table($closureTable)->where($ancestor, $key)->where($descendant, $key)->where($distance, 0);
+        }
         return $query;
     }
 
@@ -296,16 +297,25 @@ trait ClosureTable
         $descendantColumn = $this->getDescendantColumn();
         $distanceColumn = $this->getDistanceColumn();
 
-        $sql = "
-            INSERT INTO {$prefixedTable} ({$ancestorColumn}, {$descendantColumn}, {$distanceColumn})
-            SELECT tbl.{$ancestorColumn}, {$descendantId}, tbl.{$distanceColumn}+1
-            FROM {$prefixedTable} AS tbl
-            WHERE tbl.{$descendantColumn} = {$ancestorId}
-            UNION
-            SELECT {$descendantId}, {$descendantId}, 0
-        ";
-
-        DB::connection($this->connection)->query($sql);
+        $parent = DB::connection($this->connection)->table($prefixedTable)->where($descendantColumn, $ancestorId)->get()->toArray();
+        $list = [];
+        if ($parent) {
+            foreach ($parent as $row) {
+                $list[] = [
+                    $ancestorColumn   => $row[$ancestorColumn],
+                    $descendantColumn => $row[$descendantColumn],
+                    $distanceColumn   => $row[$distanceColumn]+1,
+                ];
+            }
+        }
+        $list[] = [
+            $ancestorColumn   => $descendantId,
+            $descendantColumn => $descendantId,
+            $distanceColumn   => 0
+        ];
+        foreach ($list as $row) {
+            DB::connection($this->connection)->table($prefixedTable)->insert($row);
+        }
     }
 
     /**
@@ -360,25 +370,9 @@ trait ClosureTable
         $prefixedTable = $this->getPrefixedClosureTable();
         $ancestorColumn = $this->getAncestorColumn();
         $descendantColumn = $this->getDescendantColumn();
-
-        $sql = "
-            DELETE FROM {$prefixedTable}
-            WHERE {$descendantColumn} IN (
-              SELECT d FROM (
-                SELECT {$descendantColumn} as d FROM {$prefixedTable}
-                WHERE {$ancestorColumn} = {$key}
-              ) as dct
-            )
-            AND {$ancestorColumn} IN (
-              SELECT a FROM (
-                SELECT {$ancestorColumn} AS a FROM {$prefixedTable}
-                WHERE {$descendantColumn} = {$key}
-                AND {$ancestorColumn} <> {$key}
-              ) as ct
-            )
-        ";
-
-        DB::connection($this->connection)->delete($sql);
+        $d = DB::connection($this->connection)->table($prefixedTable)->where($ancestorColumn, $key)->select($descendantColumn)->get()->toArray();
+        $a = DB::connection($this->connection)->table($prefixedTable)->where($descendantColumn, $key)->where($ancestorColumn, '<>',  $key)->select($ancestorColumn)->get()->toArray();
+        DB::connection($this->connection)->table($prefixedTable)->whereIn($descendantColumn, array_column($d, $descendantColumn))->whereIn($ancestorColumn, array_column($a, $ancestorColumn))->delete();
         return true;
     }
 
@@ -404,14 +398,28 @@ trait ClosureTable
         $descendantColumn = $this->getDescendantColumn();
         $distanceColumn = $this->getDistanceColumn();
 
-        $sql = "
-            INSERT INTO {$prefixedTable} ({$ancestorColumn}, {$descendantColumn}, {$distanceColumn})
-            SELECT supertbl.{$ancestorColumn}, subtbl.{$descendantColumn}, supertbl.{$distanceColumn}+subtbl.{$distanceColumn}+1
-            FROM (SELECT * FROM {$prefixedTable} WHERE {$descendantColumn} = {$parentKey}) as supertbl
-            JOIN {$prefixedTable} as subtbl ON subtbl.{$ancestorColumn} = {$key}
-        ";
-
-        DB::connection($this->connection)->insert($sql);
+        $result = DB::collection('user_closure')
+            ->raw(function ($collection) use ($parentKey, $key) {
+                return $collection->aggregate([
+                    ['$match' => ['descendant' => $parentKey]],
+                    ['$lookup' => [
+                        'from' => 'user_closure',
+                        'localField' => 'ancestor',
+                        'foreignField' => 'ancestor',
+                        'as' => 'subtbl'
+                    ]],
+                    ['$unwind' => '$subtbl'],
+                    ['$match' => ['subtbl.ancestor' => $key]],
+                    ['$project' => [
+                        'ancestor' => '$supertbl.ancestor',
+                        'descendant' => '$subtbl.descendant',
+                        'distance' => ['$add' => ['$supertbl.distance', '$subtbl.distance', 1]]
+                    ]]
+                ]);
+            });
+        foreach ($result as $row) {
+            DB::connection($this->connection)->table($prefixedTable)->insert($row);
+        }
         return true;
     }
 
@@ -455,7 +463,7 @@ trait ClosureTable
         $model = null;
         if ($parameter instanceof Model) {
             $model = $parameter;
-        } elseif (is_numeric($parameter)) {
+        } elseif ($parameter) {
             $model = $this->findOrFail($parameter);
         } else {
             throw (new ModelNotFoundException)->setModel(
@@ -483,14 +491,12 @@ trait ClosureTable
         if (in_array($parentKey, $ids)) {
             throw new ClosureTableException('Can\'t move to descendant');
         }
-        DB::connection($this->connection)->transaction(function () use ($parentKey) {
-            if (! $this->detachRelationships()) {
-                throw new ClosureTableException('Unbind relationships failed');
-            }
-            if (! $this->attachTreeTo($parentKey)) {
-                throw new ClosureTableException('Associate tree failed');
-            }
-        });
+        if (! $this->detachRelationships()) {
+            throw new ClosureTableException('Unbind relationships failed');
+        }
+        if (! $this->attachTreeTo($parentKey)) {
+            throw new ClosureTableException('Associate tree failed');
+        }
     }
 
     /**
@@ -516,7 +522,7 @@ trait ClosureTable
             WHERE {$descendantColumn} IN (
               SELECT d FROM (
                 SELECT {$descendantColumn} as d FROM {$prefixedTable}
-                LEFT JOIN {$table} t 
+                LEFT JOIN {$table} t
                 ON {$descendantColumn} = t.{$keyName}
                 WHERE t.{$keyName} IS NULL {$segment}
               ) as dct
@@ -524,7 +530,7 @@ trait ClosureTable
             OR {$ancestorColumn} IN (
               SELECT d FROM (
                 SELECT {$ancestorColumn} as d FROM {$prefixedTable}
-                LEFT JOIN {$table} t 
+                LEFT JOIN {$table} t
                 ON {$ancestorColumn} = t.{$keyName}
                 WHERE t.{$keyName} IS NULL {$segment}
               ) as act
@@ -589,17 +595,14 @@ trait ClosureTable
         if (! (is_array($children) || $children instanceof Collection)) {
             $children = array($children);
         }
-        DB::connection($this->connection)->transaction(function () use ($children, $key, $ids) {
-            foreach ($children as $child) {
-                $model = $this->parameter2Model($child);
-                if (in_array($model->getKey(), $ids)) {
-                    throw new ClosureTableException('Children can\'t be ancestor');
-                }
-                $model->setParentKey($key);
-                $model->save();
+        foreach ($children as $child) {
+            $model = $this->parameter2Model($child);
+            if (in_array($model->getKey(), $ids)) {
+                throw new ClosureTableException('Children can\'t be ancestor');
             }
-        });
-
+            $model->setParentKey($key);
+            $model->save();
+        }
         return true;
     }
 
