@@ -303,7 +303,7 @@ trait ClosureTable
             foreach ($parent as $row) {
                 $list[] = [
                     $ancestorColumn   => $row[$ancestorColumn],
-                    $descendantColumn => $row[$descendantColumn],
+                    $descendantColumn => $descendantId,
                     $distanceColumn   => $row[$distanceColumn]+1,
                 ];
             }
@@ -398,27 +398,18 @@ trait ClosureTable
         $descendantColumn = $this->getDescendantColumn();
         $distanceColumn = $this->getDistanceColumn();
 
-        $result = DB::collection('user_closure')
-            ->raw(function ($collection) use ($parentKey, $key) {
-                return $collection->aggregate([
-                    ['$match' => ['descendant' => $parentKey]],
-                    ['$lookup' => [
-                        'from' => 'user_closure',
-                        'localField' => 'ancestor',
-                        'foreignField' => 'ancestor',
-                        'as' => 'subtbl'
-                    ]],
-                    ['$unwind' => '$subtbl'],
-                    ['$match' => ['subtbl.ancestor' => $key]],
-                    ['$project' => [
-                        'ancestor' => '$supertbl.ancestor',
-                        'descendant' => '$subtbl.descendant',
-                        'distance' => ['$add' => ['$supertbl.distance', '$subtbl.distance', 1]]
-                    ]]
-                ]);
-            });
+        $result = DB::connection($this->connection)->table('user_closure')
+            ->where('descendant', '=', $parentKey)
+            ->join('user_closure AS subtbl', function (\Illuminate\Database\Query\JoinClause $join) use ($key) {
+                $join->on('subtbl.ancestor', '=', $key);
+            })->get()->toArray();
+
         foreach ($result as $row) {
-            DB::connection($this->connection)->table($prefixedTable)->insert($row);
+            DB::connection($this->connection)->table($prefixedTable)->insert([
+                $distanceColumn   => $row[$distanceColumn] +1,
+                $ancestorColumn   => $row[$ancestorColumn],
+                $descendantColumn => $key,
+            ]);
         }
         return true;
     }
@@ -485,7 +476,6 @@ trait ClosureTable
         } else {
             $parentKey = 0;
         }
-
         $ids = $this->getDescendantsAndSelf([$this->getKeyName()])->pluck($this->getKeyName())->toArray();
 
         if (in_array($parentKey, $ids)) {
