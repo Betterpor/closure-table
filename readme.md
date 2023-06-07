@@ -12,13 +12,14 @@
 - 支持多个根存在
 - 支持节点/树修复
 - 支持软删除
+- 支持mogodb
 - ...
 
 ## 依赖
 
 - php > 5.6.0
 - laravel ~5.0|~6.0|~7.0|~8.0
-- mysql > 5.1.0
+- mysql > 5.1.0|mogodb
 
 ## 关于`Closure Table`
 
