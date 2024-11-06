@@ -188,13 +188,11 @@ trait ClosureTable
 
         switch ($column) {
             case 'ancestor':
-                $query = $this->join($closureTable, $ancestor, '=', $keyName)
-                    ->where($descendant, '=', $key);
+                $query = DB::connection($this->connection)->table($closureTable)->where($descendant, '=', $key);
                 break;
 
             case 'descendant':
-                $query = $this->join($closureTable, $descendant, '=', $keyName)
-                    ->where($ancestor, '=', $key);
+                $query = DB::connection($this->connection)->table($closureTable)->where($ancestor, '=', $key);
                 break;
         }
 
